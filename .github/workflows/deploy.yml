@@ -1,0 +1,67 @@
+name: Deploy to DigitalOcean
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    name: Deploy Dockerized Example
+    runs-on: ubuntu-latest
+
+    env:
+      APP_NAME: deploy-example
+      DROPLET_IP: ${{ secrets.DROPLET_IP }}
+      SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+      SSH_USER: root
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "$SSH_PRIVATE_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DROPLET_IP" >> ~/.ssh/known_hosts
+
+      - name: Build Docker image
+        run: docker build -t $APP_NAME .
+
+      - name: Save and compress Docker image
+        run: docker save $APP_NAME | gzip > $APP_NAME.tar.gz
+
+      - name: Upload Docker image to droplet
+        run: scp $APP_NAME.tar.gz $SSH_USER@$DROPLET_IP:~
+
+      - name: Generate systemd service and restart
+        run: |
+          # push service + nginx configs as before
+          scp deploy-example.service $SSH_USER@$DROPLET_IP:/etc/systemd/system/deploy-example.service
+          scp nginx-deploy-example.conf $SSH_USER@$DROPLET_IP:/etc/nginx/sites-available/yourdomainhere.com
+
+          ssh $SSH_USER@$DROPLET_IP <<EOF
+          set -e
+
+          # ─── Load the new image ─────────────────────────────────────────────
+          gunzip < deploy-example.tar.gz | docker load
+
+          docker image prune -f      # removes only dangling images (not used by any containers)
+          docker container prune -f  # removes only stopped containers
+
+          # ─── Kick the service back online ──────────────────────────────────
+          systemctl daemon-reexec
+          systemctl restart deploy-example
+          systemctl enable  deploy-example
+
+          # ─── Nginx housekeeping + SSL  ─────────────────────────────────────
+          ln -sf /etc/nginx/sites-available/yourdomainhere.com \
+                 /etc/nginx/sites-enabled/yourdomainhere.com
+          nginx -t && systemctl reload nginx
+
+          certbot --nginx -n --agree-tos \
+                  --email admin@yourdomainhere.com \
+                  -d yourdomainhere.com
+          EOF

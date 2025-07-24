@@ -1,0 +1,20 @@
+[Unit]
+Description=Deploy Example Docker Service
+After=docker.service
+Requires=docker.service
+
+[Service]
+Restart=always
+ExecStart=/usr/bin/docker run \
+  --rm \
+  --name deploy-example \
+  --network host \
+  -p 3000:3000 \
+  -e PORT=3000 \
+  deploy-example
+ExecStop=/usr/bin/docker stop deploy-example
+TimeoutStartSec=0
+User=root
+
+[Install]
+WantedBy=multi-user.target
